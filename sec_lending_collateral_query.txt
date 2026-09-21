@@ -1,0 +1,50 @@
+CREATE EXTERNAL TABLE xlab_ecb_prj_sftds_cb_common.hermesf_sf_collateral
+STORED AS PARQUET TBLPROPERTIES ('external.table.purge'='true')
+AS
+SELECT
+  t.tec_surrogate_key,
+  CAST(t.reference_period AS DATE)               AS reference_period,
+  t.tec_ruti,
+  'security'                                     AS collateral_kind,
+  e.pos                                          AS collateral_index,
+  CAST(e.id AS STRING)                           AS collateral_isin,
+  ABS(e.quantity_or_nominal_amount)              AS collateral_quantity,
+  e.quantity_or_nominal_amount_notation_type     AS collateral_quantity_notation,
+  CAST(NULL AS DECIMAL(23,5))                    AS cash_amount,
+  CAST(NULL AS STRING)                           AS cash_currency,
+  e.haircut_margin                               AS haircut,
+  CAST(e.security_type AS STRING)                AS collateral_security_type,
+  CAST(e.quality AS STRING)                      AS collateral_quality,
+  e.isin_esa_instr_sector_csdb                   AS collateral_instr_sector,
+  CAST(e.maturity_date AS DATE)                  AS collateral_maturity_date,
+  CAST(COALESCE(e.isin_issuer_lei_csdb, e.issuer_lei) AS STRING)              AS collateral_issuer_lei,
+  CAST(COALESCE(e.isin_issuer_country_code_csdb, e.issuer_country) AS STRING) AS collateral_issuer_country,
+  COALESCE(e.isin_issuer_esa_sector_csdb, e.issuer_esa_sector_riad)           AS collateral_issuer_sector,
+  e.reuse_availability                           AS collateral_reusable
+FROM crp_sftds_ecb.trade_states_securitieslending t, t.collateral_security e
+WHERE t.tec_surrogate_key IN (SELECT tec_surrogate_key FROM xlab_ecb_prj_sftds_cb_common.hermesf_sf)
+
+UNION ALL
+
+SELECT
+  t.tec_surrogate_key,
+  CAST(t.reference_period AS DATE),
+  t.tec_ruti,
+  'cash',
+  e.pos,
+  CAST(NULL AS STRING),
+  CAST(NULL AS DECIMAL(23,5)),
+  CAST(NULL AS STRING),
+  ABS(e.amount),
+  CAST(e.amount_currency AS STRING),
+  e.haircut_margin,
+  CAST(NULL AS STRING),
+  CAST(NULL AS STRING),
+  CAST(NULL AS STRING),
+  CAST(NULL AS DATE),
+  CAST(NULL AS STRING),
+  CAST(NULL AS STRING),
+  CAST(NULL AS STRING),
+  CAST(NULL AS BOOLEAN)
+FROM crp_sftds_ecb.trade_states_securitieslending t, t.collateral_cash e
+WHERE t.tec_surrogate_key IN (SELECT tec_surrogate_key FROM xlab_ecb_prj_sftds_cb_common.hermesf_sf);

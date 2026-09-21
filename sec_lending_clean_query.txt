@@ -11,6 +11,7 @@ SELECT
   d.execution_timestamp,
   d.tec_ruti,
   d.uti,
+  d.tec_surrogate_key,
 
   CASE WHEN d.counterparty_side = 'TAKE' THEN 'lender'
        WHEN d.counterparty_side = 'GIVE' THEN 'borrower' END AS reported_by,

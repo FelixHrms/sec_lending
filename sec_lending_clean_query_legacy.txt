@@ -1,3 +1,8 @@
+-- Built in yearly chunks so that each run reads one year of partitions.
+-- The first statement creates the table, the following ones append to it.
+-- The select is identical in every chunk, only the date range changes.
+
+-- chunk 1: 2021-01-01 to 2021-12-31
 CREATE EXTERNAL TABLE xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
 STORED AS PARQUET TBLPROPERTIES ('external.table.purge'='true')
 AS
@@ -150,7 +155,817 @@ FROM (
                     t.rptgdttm DESC
          ) AS rn
   FROM crp_sftds_ecb_legacy.state_sl_079 t
-  WHERE t.business_date BETWEEN '2021-01-01' AND '2026-05-31'
+  WHERE t.business_date BETWEEN '2021-01-01' AND '2021-12-31'
+    AND t.local_index = 0
+    AND t.ruti IS NOT NULL AND t.ruti <> ''
+    AND t.lndata_assttp_scty_id IS NOT NULL
+    AND t.lnval_eur > 0
+    AND t.lnval_eur < 100000000000
+    AND t.valdt <= t.business_date
+    AND (t.term_fxd_mtrtydt IS NULL OR t.term_fxd_mtrtydt >= t.business_date)
+) d
+WHERE d.rn = 1;
+
+-- chunk 2: 2022-01-01 to 2022-12-31
+INSERT INTO xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
+SELECT
+  -- dates and identifiers
+  CAST(d.business_date AS DATE)      AS reference_period,
+  CAST(d.valdt AS DATE)              AS start_date,
+  COALESCE(CAST(d.termntndt AS DATE),
+           CAST(d.term_fxd_mtrtydt AS DATE)) AS effective_maturity_date,
+  CAST(d.evtdt AS DATE)              AS event_date,
+  CAST(SUBSTR(d.exctndttm, 1, 19) AS TIMESTAMP) AS execution_timestamp,
+  d.ruti                             AS tec_ruti,
+  d.uti,
+  d.tec_surrogate_key,
+  d.ctrctmod_lvl                     AS level,
+
+  CASE WHEN d.direction = 'TAKE' THEN 'lender'
+       WHEN d.direction = 'GIVE' THEN 'borrower' END AS reported_by,
+
+  -- lender = collateral taker
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_id
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_id END AS lender_id,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_name_gleif
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_name_gleif END AS lender_name,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_country
+       WHEN d.direction = 'GIVE' THEN d.oth_country END AS lender_country,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_sector_riad
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_sector_riad END AS lender_sector,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_parent_id
+       WHEN d.direction = 'GIVE' THEN d.oth_parent_id END AS lender_parent_id,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_parent_country
+       WHEN d.direction = 'GIVE' THEN d.oth_parent_country END AS lender_parent_country,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_ult_parent_sector_riad
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_ult_parent_sector_riad END AS lender_parent_sector,
+
+  -- borrower = collateral provider
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_id
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_id END AS borrower_id,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_name_gleif
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_name_gleif END AS borrower_name,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_country
+       WHEN d.direction = 'TAKE' THEN d.oth_country END AS borrower_country,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_sector_riad
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_sector_riad END AS borrower_sector,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_parent_id
+       WHEN d.direction = 'TAKE' THEN d.oth_parent_id END AS borrower_parent_id,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_parent_country
+       WHEN d.direction = 'TAKE' THEN d.oth_parent_country END AS borrower_parent_country,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_ult_parent_sector_riad
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_ult_parent_sector_riad END AS borrower_parent_sector,
+
+  -- intermediaries
+  d.othrpty_bnfcry_id                AS beneficiary_id,
+  d.agent_lender_any                 AS agent_lender_id,
+  d.othrpty_trptyagt_id              AS triparty_agent_id,
+  CASE WHEN d.clrsts_clrd_id IS NOT NULL THEN TRUE ELSE FALSE END AS cleared,
+
+  -- security on loan, one ISIN per trade
+  d.lndata_assttp_scty_id            AS isin,
+  d.lndata_assttp_scty_tp            AS loan_security_type,
+  d.lndata_assttp_scty_qlty          AS loan_security_quality,
+  d.lndata_assttp_scty_inst_esa_2010_csdb AS loan_security_instr_sector,
+  COALESCE(CAST(d.lndata_assttp_scty_mtrty AS DATE),
+           CAST(d.lndata_assttp_scty_mtrty_date_csdb AS DATE)) AS loan_security_maturity_date,
+  COALESCE(d.lndata_assttp_scty_issr_lei_csdb,
+           d.lndata_assttp_scty_issr_id)                  AS loan_security_issuer_lei,
+  COALESCE(d.lndata_assttp_scty_issr_cntry_csdb,
+           d.lndata_assttp_scty_issr_ctr)                 AS loan_security_issuer_country,
+  COALESCE(d.lndata_assttp_scty_issr_esa_2010_sctr_csdb,
+           d.lndata_assttp_scty_issr_sector_riad)         AS loan_security_issuer_sector,
+
+  -- how much of it
+  COALESCE(d.lndata_assttp_scty_qty,
+           d.lndata_assttp_scty_nmnl_amt)                 AS loan_quantity,
+  CASE WHEN d.lndata_assttp_scty_qty IS NOT NULL THEN 'Quantity'
+       WHEN d.lndata_assttp_scty_nmnl_amt IS NOT NULL THEN 'Monetary value' END AS loan_quantity_notation,
+  COALESCE(d.lndata_assttp_scty_unitpric_amt,
+           d.lndata_assttp_scty_unitpric_pctg,
+           d.lndata_assttp_scty_unitpric_yld)             AS loan_price,
+  d.lndata_assttp_scty_unitpric_amt_ccy                   AS loan_price_currency,
+  CASE WHEN d.lndata_assttp_scty_unitpric_amt IS NOT NULL THEN 'Monetary value'
+       WHEN d.lndata_assttp_scty_unitpric_pctg IS NOT NULL THEN 'Percentage'
+       WHEN d.lndata_assttp_scty_unitpric_yld IS NOT NULL THEN 'Yield' END AS loan_price_notation,
+  d.lnval                            AS loan_value,
+  d.lnval_ccy                        AS loan_value_currency,
+  d.lnval_eur                        AS loan_value_eur,
+  CAST(d.lndata_assttp_scty_mktval_amt_eur AS DECIMAL(23,5)) AS loan_market_value_eur,
+
+  -- price of the loan
+  d.lndgfee                          AS lending_fee,
+  CASE WHEN d.rbtrate_type = 'Fltg' THEN d.rbtrate_rate_derived_sdw
+       ELSE d.rbtrate_fxd_rate END   AS rebate_rate,
+  d.rbtrate_fltg_refrate_indx        AS rebate_index,
+  d.rbtrate_fltg_bsisptsprd          AS rebate_spread_bp,
+
+  -- term
+  CASE WHEN d.is_opn_term = '1' THEN 'OPEN'
+       WHEN d.is_opn_term = '0' THEN 'FIXED' END AS term_type,
+  COALESCE(d.term_fxd_termntnoptn, d.term_opn_termntnoptn) AS termination_optionality,
+  d.gnlcoll                          AS general_collateral_indicator,
+
+  -- collateral
+  d.netxpsrcollstnind                AS collateralisation_net_exposure,
+  d.bsktidr                          AS collateral_basket_id,
+  CASE WHEN d.uncollsd = 'NORE' THEN 'none'
+       WHEN d.collcmpnttp_scty = 1 AND d.collcmpnttp_csh = 1 THEN 'mixed'
+       WHEN d.collcmpnttp_scty = 1 THEN 'securities'
+       WHEN d.collcmpnttp_csh = 1 THEN 'cash'
+       WHEN d.netxpsrcollstnind = TRUE THEN 'net_exposure'
+       WHEN d.bsktidr IS NOT NULL THEN 'basket'
+       ELSE 'missing' END AS collateral_type
+FROM (
+  SELECT t.tec_surrogate_key, t.business_date, t.valdt, t.termntndt, t.term_fxd_mtrtydt,
+         t.term_fxd_termntnoptn, t.term_opn_termntnoptn, t.evtdt, t.exctndttm,
+         t.ruti, t.uti, t.ctrctmod_lvl, t.direction,
+         t.rptgctrpty_id, t.rptgctrpty_name_gleif, t.rptgctrpty_sector_riad, t.rptgctrpty_ult_parent_sector_riad,
+         t.othrctrpty_id, t.othrctrpty_name_gleif, t.othrctrpty_sector_riad, t.othrctrpty_ult_parent_sector_riad,
+         t.othrpty_bnfcry_id, t.othrpty_trptyagt_id, t.clrsts_clrd_id,
+         t.lndata_assttp_scty_id, t.lndata_assttp_scty_tp, t.lndata_assttp_scty_qlty,
+         t.lndata_assttp_scty_inst_esa_2010_csdb, t.lndata_assttp_scty_mtrty, t.lndata_assttp_scty_mtrty_date_csdb,
+         t.lndata_assttp_scty_issr_lei_csdb, t.lndata_assttp_scty_issr_id,
+         t.lndata_assttp_scty_issr_cntry_csdb, t.lndata_assttp_scty_issr_ctr,
+         t.lndata_assttp_scty_issr_esa_2010_sctr_csdb, t.lndata_assttp_scty_issr_sector_riad,
+         t.lndata_assttp_scty_qty, t.lndata_assttp_scty_nmnl_amt,
+         t.lndata_assttp_scty_unitpric_amt, t.lndata_assttp_scty_unitpric_pctg, t.lndata_assttp_scty_unitpric_yld,
+         t.lndata_assttp_scty_unitpric_amt_ccy,
+         t.lnval, t.lnval_ccy, t.lnval_eur, t.lndata_assttp_scty_mktval_amt_eur,
+         t.lndgfee, t.rbtrate_type, t.rbtrate_rate_derived_sdw, t.rbtrate_fxd_rate,
+         t.rbtrate_fltg_refrate_indx, t.rbtrate_fltg_bsisptsprd,
+         t.is_opn_term, t.gnlcoll, t.netxpsrcollstnind, t.bsktidr, t.uncollsd,
+         t.collcmpnttp_scty, t.collcmpnttp_csh,
+         COALESCE(t.rptgctrpty_country_riad,
+                  t.rptgctrpty_country_gleif) AS rep_country,
+         COALESCE(t.othrctrpty_country_riad,
+                  t.othrctrpty_country_gleif,
+                  t.othrctrpty_ctrycd) AS oth_country,
+         COALESCE(t.rptgctrpty_ult_parent_id_riad,
+                  t.rptgctrpty_ult_parent_id_gleif) AS rep_parent_id,
+         COALESCE(t.othrctrpty_ult_parent_id_riad,
+                  t.othrctrpty_ult_parent_id_gleif) AS oth_parent_id,
+         COALESCE(t.rptgctrpty_ult_parent_country_riad,
+                  t.rptgctrpty_ult_parent_country_gleif) AS rep_parent_country,
+         COALESCE(t.othrctrpty_ult_parent_country_riad,
+                  t.othrctrpty_ult_parent_country_gleif) AS oth_parent_country,
+         MAX(t.othrpty_agtlndr_id) OVER (PARTITION BY t.ruti, t.business_date) AS agent_lender_any,
+         ROW_NUMBER() OVER (
+           PARTITION BY t.ruti, t.business_date
+           ORDER BY COALESCE(t.best_value_leg, 0) DESC,
+                    CASE WHEN t.direction = 'TAKE' THEN 1 ELSE 0 END DESC,
+                    t.rptgdttm DESC
+         ) AS rn
+  FROM crp_sftds_ecb_legacy.state_sl_079 t
+  WHERE t.business_date BETWEEN '2022-01-01' AND '2022-12-31'
+    AND t.local_index = 0
+    AND t.ruti IS NOT NULL AND t.ruti <> ''
+    AND t.lndata_assttp_scty_id IS NOT NULL
+    AND t.lnval_eur > 0
+    AND t.lnval_eur < 100000000000
+    AND t.valdt <= t.business_date
+    AND (t.term_fxd_mtrtydt IS NULL OR t.term_fxd_mtrtydt >= t.business_date)
+) d
+WHERE d.rn = 1;
+
+-- chunk 3: 2023-01-01 to 2023-12-31
+INSERT INTO xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
+SELECT
+  -- dates and identifiers
+  CAST(d.business_date AS DATE)      AS reference_period,
+  CAST(d.valdt AS DATE)              AS start_date,
+  COALESCE(CAST(d.termntndt AS DATE),
+           CAST(d.term_fxd_mtrtydt AS DATE)) AS effective_maturity_date,
+  CAST(d.evtdt AS DATE)              AS event_date,
+  CAST(SUBSTR(d.exctndttm, 1, 19) AS TIMESTAMP) AS execution_timestamp,
+  d.ruti                             AS tec_ruti,
+  d.uti,
+  d.tec_surrogate_key,
+  d.ctrctmod_lvl                     AS level,
+
+  CASE WHEN d.direction = 'TAKE' THEN 'lender'
+       WHEN d.direction = 'GIVE' THEN 'borrower' END AS reported_by,
+
+  -- lender = collateral taker
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_id
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_id END AS lender_id,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_name_gleif
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_name_gleif END AS lender_name,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_country
+       WHEN d.direction = 'GIVE' THEN d.oth_country END AS lender_country,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_sector_riad
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_sector_riad END AS lender_sector,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_parent_id
+       WHEN d.direction = 'GIVE' THEN d.oth_parent_id END AS lender_parent_id,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_parent_country
+       WHEN d.direction = 'GIVE' THEN d.oth_parent_country END AS lender_parent_country,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_ult_parent_sector_riad
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_ult_parent_sector_riad END AS lender_parent_sector,
+
+  -- borrower = collateral provider
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_id
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_id END AS borrower_id,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_name_gleif
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_name_gleif END AS borrower_name,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_country
+       WHEN d.direction = 'TAKE' THEN d.oth_country END AS borrower_country,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_sector_riad
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_sector_riad END AS borrower_sector,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_parent_id
+       WHEN d.direction = 'TAKE' THEN d.oth_parent_id END AS borrower_parent_id,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_parent_country
+       WHEN d.direction = 'TAKE' THEN d.oth_parent_country END AS borrower_parent_country,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_ult_parent_sector_riad
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_ult_parent_sector_riad END AS borrower_parent_sector,
+
+  -- intermediaries
+  d.othrpty_bnfcry_id                AS beneficiary_id,
+  d.agent_lender_any                 AS agent_lender_id,
+  d.othrpty_trptyagt_id              AS triparty_agent_id,
+  CASE WHEN d.clrsts_clrd_id IS NOT NULL THEN TRUE ELSE FALSE END AS cleared,
+
+  -- security on loan, one ISIN per trade
+  d.lndata_assttp_scty_id            AS isin,
+  d.lndata_assttp_scty_tp            AS loan_security_type,
+  d.lndata_assttp_scty_qlty          AS loan_security_quality,
+  d.lndata_assttp_scty_inst_esa_2010_csdb AS loan_security_instr_sector,
+  COALESCE(CAST(d.lndata_assttp_scty_mtrty AS DATE),
+           CAST(d.lndata_assttp_scty_mtrty_date_csdb AS DATE)) AS loan_security_maturity_date,
+  COALESCE(d.lndata_assttp_scty_issr_lei_csdb,
+           d.lndata_assttp_scty_issr_id)                  AS loan_security_issuer_lei,
+  COALESCE(d.lndata_assttp_scty_issr_cntry_csdb,
+           d.lndata_assttp_scty_issr_ctr)                 AS loan_security_issuer_country,
+  COALESCE(d.lndata_assttp_scty_issr_esa_2010_sctr_csdb,
+           d.lndata_assttp_scty_issr_sector_riad)         AS loan_security_issuer_sector,
+
+  -- how much of it
+  COALESCE(d.lndata_assttp_scty_qty,
+           d.lndata_assttp_scty_nmnl_amt)                 AS loan_quantity,
+  CASE WHEN d.lndata_assttp_scty_qty IS NOT NULL THEN 'Quantity'
+       WHEN d.lndata_assttp_scty_nmnl_amt IS NOT NULL THEN 'Monetary value' END AS loan_quantity_notation,
+  COALESCE(d.lndata_assttp_scty_unitpric_amt,
+           d.lndata_assttp_scty_unitpric_pctg,
+           d.lndata_assttp_scty_unitpric_yld)             AS loan_price,
+  d.lndata_assttp_scty_unitpric_amt_ccy                   AS loan_price_currency,
+  CASE WHEN d.lndata_assttp_scty_unitpric_amt IS NOT NULL THEN 'Monetary value'
+       WHEN d.lndata_assttp_scty_unitpric_pctg IS NOT NULL THEN 'Percentage'
+       WHEN d.lndata_assttp_scty_unitpric_yld IS NOT NULL THEN 'Yield' END AS loan_price_notation,
+  d.lnval                            AS loan_value,
+  d.lnval_ccy                        AS loan_value_currency,
+  d.lnval_eur                        AS loan_value_eur,
+  CAST(d.lndata_assttp_scty_mktval_amt_eur AS DECIMAL(23,5)) AS loan_market_value_eur,
+
+  -- price of the loan
+  d.lndgfee                          AS lending_fee,
+  CASE WHEN d.rbtrate_type = 'Fltg' THEN d.rbtrate_rate_derived_sdw
+       ELSE d.rbtrate_fxd_rate END   AS rebate_rate,
+  d.rbtrate_fltg_refrate_indx        AS rebate_index,
+  d.rbtrate_fltg_bsisptsprd          AS rebate_spread_bp,
+
+  -- term
+  CASE WHEN d.is_opn_term = '1' THEN 'OPEN'
+       WHEN d.is_opn_term = '0' THEN 'FIXED' END AS term_type,
+  COALESCE(d.term_fxd_termntnoptn, d.term_opn_termntnoptn) AS termination_optionality,
+  d.gnlcoll                          AS general_collateral_indicator,
+
+  -- collateral
+  d.netxpsrcollstnind                AS collateralisation_net_exposure,
+  d.bsktidr                          AS collateral_basket_id,
+  CASE WHEN d.uncollsd = 'NORE' THEN 'none'
+       WHEN d.collcmpnttp_scty = 1 AND d.collcmpnttp_csh = 1 THEN 'mixed'
+       WHEN d.collcmpnttp_scty = 1 THEN 'securities'
+       WHEN d.collcmpnttp_csh = 1 THEN 'cash'
+       WHEN d.netxpsrcollstnind = TRUE THEN 'net_exposure'
+       WHEN d.bsktidr IS NOT NULL THEN 'basket'
+       ELSE 'missing' END AS collateral_type
+FROM (
+  SELECT t.tec_surrogate_key, t.business_date, t.valdt, t.termntndt, t.term_fxd_mtrtydt,
+         t.term_fxd_termntnoptn, t.term_opn_termntnoptn, t.evtdt, t.exctndttm,
+         t.ruti, t.uti, t.ctrctmod_lvl, t.direction,
+         t.rptgctrpty_id, t.rptgctrpty_name_gleif, t.rptgctrpty_sector_riad, t.rptgctrpty_ult_parent_sector_riad,
+         t.othrctrpty_id, t.othrctrpty_name_gleif, t.othrctrpty_sector_riad, t.othrctrpty_ult_parent_sector_riad,
+         t.othrpty_bnfcry_id, t.othrpty_trptyagt_id, t.clrsts_clrd_id,
+         t.lndata_assttp_scty_id, t.lndata_assttp_scty_tp, t.lndata_assttp_scty_qlty,
+         t.lndata_assttp_scty_inst_esa_2010_csdb, t.lndata_assttp_scty_mtrty, t.lndata_assttp_scty_mtrty_date_csdb,
+         t.lndata_assttp_scty_issr_lei_csdb, t.lndata_assttp_scty_issr_id,
+         t.lndata_assttp_scty_issr_cntry_csdb, t.lndata_assttp_scty_issr_ctr,
+         t.lndata_assttp_scty_issr_esa_2010_sctr_csdb, t.lndata_assttp_scty_issr_sector_riad,
+         t.lndata_assttp_scty_qty, t.lndata_assttp_scty_nmnl_amt,
+         t.lndata_assttp_scty_unitpric_amt, t.lndata_assttp_scty_unitpric_pctg, t.lndata_assttp_scty_unitpric_yld,
+         t.lndata_assttp_scty_unitpric_amt_ccy,
+         t.lnval, t.lnval_ccy, t.lnval_eur, t.lndata_assttp_scty_mktval_amt_eur,
+         t.lndgfee, t.rbtrate_type, t.rbtrate_rate_derived_sdw, t.rbtrate_fxd_rate,
+         t.rbtrate_fltg_refrate_indx, t.rbtrate_fltg_bsisptsprd,
+         t.is_opn_term, t.gnlcoll, t.netxpsrcollstnind, t.bsktidr, t.uncollsd,
+         t.collcmpnttp_scty, t.collcmpnttp_csh,
+         COALESCE(t.rptgctrpty_country_riad,
+                  t.rptgctrpty_country_gleif) AS rep_country,
+         COALESCE(t.othrctrpty_country_riad,
+                  t.othrctrpty_country_gleif,
+                  t.othrctrpty_ctrycd) AS oth_country,
+         COALESCE(t.rptgctrpty_ult_parent_id_riad,
+                  t.rptgctrpty_ult_parent_id_gleif) AS rep_parent_id,
+         COALESCE(t.othrctrpty_ult_parent_id_riad,
+                  t.othrctrpty_ult_parent_id_gleif) AS oth_parent_id,
+         COALESCE(t.rptgctrpty_ult_parent_country_riad,
+                  t.rptgctrpty_ult_parent_country_gleif) AS rep_parent_country,
+         COALESCE(t.othrctrpty_ult_parent_country_riad,
+                  t.othrctrpty_ult_parent_country_gleif) AS oth_parent_country,
+         MAX(t.othrpty_agtlndr_id) OVER (PARTITION BY t.ruti, t.business_date) AS agent_lender_any,
+         ROW_NUMBER() OVER (
+           PARTITION BY t.ruti, t.business_date
+           ORDER BY COALESCE(t.best_value_leg, 0) DESC,
+                    CASE WHEN t.direction = 'TAKE' THEN 1 ELSE 0 END DESC,
+                    t.rptgdttm DESC
+         ) AS rn
+  FROM crp_sftds_ecb_legacy.state_sl_079 t
+  WHERE t.business_date BETWEEN '2023-01-01' AND '2023-12-31'
+    AND t.local_index = 0
+    AND t.ruti IS NOT NULL AND t.ruti <> ''
+    AND t.lndata_assttp_scty_id IS NOT NULL
+    AND t.lnval_eur > 0
+    AND t.lnval_eur < 100000000000
+    AND t.valdt <= t.business_date
+    AND (t.term_fxd_mtrtydt IS NULL OR t.term_fxd_mtrtydt >= t.business_date)
+) d
+WHERE d.rn = 1;
+
+-- chunk 4: 2024-01-01 to 2024-12-31
+INSERT INTO xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
+SELECT
+  -- dates and identifiers
+  CAST(d.business_date AS DATE)      AS reference_period,
+  CAST(d.valdt AS DATE)              AS start_date,
+  COALESCE(CAST(d.termntndt AS DATE),
+           CAST(d.term_fxd_mtrtydt AS DATE)) AS effective_maturity_date,
+  CAST(d.evtdt AS DATE)              AS event_date,
+  CAST(SUBSTR(d.exctndttm, 1, 19) AS TIMESTAMP) AS execution_timestamp,
+  d.ruti                             AS tec_ruti,
+  d.uti,
+  d.tec_surrogate_key,
+  d.ctrctmod_lvl                     AS level,
+
+  CASE WHEN d.direction = 'TAKE' THEN 'lender'
+       WHEN d.direction = 'GIVE' THEN 'borrower' END AS reported_by,
+
+  -- lender = collateral taker
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_id
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_id END AS lender_id,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_name_gleif
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_name_gleif END AS lender_name,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_country
+       WHEN d.direction = 'GIVE' THEN d.oth_country END AS lender_country,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_sector_riad
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_sector_riad END AS lender_sector,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_parent_id
+       WHEN d.direction = 'GIVE' THEN d.oth_parent_id END AS lender_parent_id,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_parent_country
+       WHEN d.direction = 'GIVE' THEN d.oth_parent_country END AS lender_parent_country,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_ult_parent_sector_riad
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_ult_parent_sector_riad END AS lender_parent_sector,
+
+  -- borrower = collateral provider
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_id
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_id END AS borrower_id,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_name_gleif
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_name_gleif END AS borrower_name,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_country
+       WHEN d.direction = 'TAKE' THEN d.oth_country END AS borrower_country,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_sector_riad
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_sector_riad END AS borrower_sector,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_parent_id
+       WHEN d.direction = 'TAKE' THEN d.oth_parent_id END AS borrower_parent_id,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_parent_country
+       WHEN d.direction = 'TAKE' THEN d.oth_parent_country END AS borrower_parent_country,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_ult_parent_sector_riad
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_ult_parent_sector_riad END AS borrower_parent_sector,
+
+  -- intermediaries
+  d.othrpty_bnfcry_id                AS beneficiary_id,
+  d.agent_lender_any                 AS agent_lender_id,
+  d.othrpty_trptyagt_id              AS triparty_agent_id,
+  CASE WHEN d.clrsts_clrd_id IS NOT NULL THEN TRUE ELSE FALSE END AS cleared,
+
+  -- security on loan, one ISIN per trade
+  d.lndata_assttp_scty_id            AS isin,
+  d.lndata_assttp_scty_tp            AS loan_security_type,
+  d.lndata_assttp_scty_qlty          AS loan_security_quality,
+  d.lndata_assttp_scty_inst_esa_2010_csdb AS loan_security_instr_sector,
+  COALESCE(CAST(d.lndata_assttp_scty_mtrty AS DATE),
+           CAST(d.lndata_assttp_scty_mtrty_date_csdb AS DATE)) AS loan_security_maturity_date,
+  COALESCE(d.lndata_assttp_scty_issr_lei_csdb,
+           d.lndata_assttp_scty_issr_id)                  AS loan_security_issuer_lei,
+  COALESCE(d.lndata_assttp_scty_issr_cntry_csdb,
+           d.lndata_assttp_scty_issr_ctr)                 AS loan_security_issuer_country,
+  COALESCE(d.lndata_assttp_scty_issr_esa_2010_sctr_csdb,
+           d.lndata_assttp_scty_issr_sector_riad)         AS loan_security_issuer_sector,
+
+  -- how much of it
+  COALESCE(d.lndata_assttp_scty_qty,
+           d.lndata_assttp_scty_nmnl_amt)                 AS loan_quantity,
+  CASE WHEN d.lndata_assttp_scty_qty IS NOT NULL THEN 'Quantity'
+       WHEN d.lndata_assttp_scty_nmnl_amt IS NOT NULL THEN 'Monetary value' END AS loan_quantity_notation,
+  COALESCE(d.lndata_assttp_scty_unitpric_amt,
+           d.lndata_assttp_scty_unitpric_pctg,
+           d.lndata_assttp_scty_unitpric_yld)             AS loan_price,
+  d.lndata_assttp_scty_unitpric_amt_ccy                   AS loan_price_currency,
+  CASE WHEN d.lndata_assttp_scty_unitpric_amt IS NOT NULL THEN 'Monetary value'
+       WHEN d.lndata_assttp_scty_unitpric_pctg IS NOT NULL THEN 'Percentage'
+       WHEN d.lndata_assttp_scty_unitpric_yld IS NOT NULL THEN 'Yield' END AS loan_price_notation,
+  d.lnval                            AS loan_value,
+  d.lnval_ccy                        AS loan_value_currency,
+  d.lnval_eur                        AS loan_value_eur,
+  CAST(d.lndata_assttp_scty_mktval_amt_eur AS DECIMAL(23,5)) AS loan_market_value_eur,
+
+  -- price of the loan
+  d.lndgfee                          AS lending_fee,
+  CASE WHEN d.rbtrate_type = 'Fltg' THEN d.rbtrate_rate_derived_sdw
+       ELSE d.rbtrate_fxd_rate END   AS rebate_rate,
+  d.rbtrate_fltg_refrate_indx        AS rebate_index,
+  d.rbtrate_fltg_bsisptsprd          AS rebate_spread_bp,
+
+  -- term
+  CASE WHEN d.is_opn_term = '1' THEN 'OPEN'
+       WHEN d.is_opn_term = '0' THEN 'FIXED' END AS term_type,
+  COALESCE(d.term_fxd_termntnoptn, d.term_opn_termntnoptn) AS termination_optionality,
+  d.gnlcoll                          AS general_collateral_indicator,
+
+  -- collateral
+  d.netxpsrcollstnind                AS collateralisation_net_exposure,
+  d.bsktidr                          AS collateral_basket_id,
+  CASE WHEN d.uncollsd = 'NORE' THEN 'none'
+       WHEN d.collcmpnttp_scty = 1 AND d.collcmpnttp_csh = 1 THEN 'mixed'
+       WHEN d.collcmpnttp_scty = 1 THEN 'securities'
+       WHEN d.collcmpnttp_csh = 1 THEN 'cash'
+       WHEN d.netxpsrcollstnind = TRUE THEN 'net_exposure'
+       WHEN d.bsktidr IS NOT NULL THEN 'basket'
+       ELSE 'missing' END AS collateral_type
+FROM (
+  SELECT t.tec_surrogate_key, t.business_date, t.valdt, t.termntndt, t.term_fxd_mtrtydt,
+         t.term_fxd_termntnoptn, t.term_opn_termntnoptn, t.evtdt, t.exctndttm,
+         t.ruti, t.uti, t.ctrctmod_lvl, t.direction,
+         t.rptgctrpty_id, t.rptgctrpty_name_gleif, t.rptgctrpty_sector_riad, t.rptgctrpty_ult_parent_sector_riad,
+         t.othrctrpty_id, t.othrctrpty_name_gleif, t.othrctrpty_sector_riad, t.othrctrpty_ult_parent_sector_riad,
+         t.othrpty_bnfcry_id, t.othrpty_trptyagt_id, t.clrsts_clrd_id,
+         t.lndata_assttp_scty_id, t.lndata_assttp_scty_tp, t.lndata_assttp_scty_qlty,
+         t.lndata_assttp_scty_inst_esa_2010_csdb, t.lndata_assttp_scty_mtrty, t.lndata_assttp_scty_mtrty_date_csdb,
+         t.lndata_assttp_scty_issr_lei_csdb, t.lndata_assttp_scty_issr_id,
+         t.lndata_assttp_scty_issr_cntry_csdb, t.lndata_assttp_scty_issr_ctr,
+         t.lndata_assttp_scty_issr_esa_2010_sctr_csdb, t.lndata_assttp_scty_issr_sector_riad,
+         t.lndata_assttp_scty_qty, t.lndata_assttp_scty_nmnl_amt,
+         t.lndata_assttp_scty_unitpric_amt, t.lndata_assttp_scty_unitpric_pctg, t.lndata_assttp_scty_unitpric_yld,
+         t.lndata_assttp_scty_unitpric_amt_ccy,
+         t.lnval, t.lnval_ccy, t.lnval_eur, t.lndata_assttp_scty_mktval_amt_eur,
+         t.lndgfee, t.rbtrate_type, t.rbtrate_rate_derived_sdw, t.rbtrate_fxd_rate,
+         t.rbtrate_fltg_refrate_indx, t.rbtrate_fltg_bsisptsprd,
+         t.is_opn_term, t.gnlcoll, t.netxpsrcollstnind, t.bsktidr, t.uncollsd,
+         t.collcmpnttp_scty, t.collcmpnttp_csh,
+         COALESCE(t.rptgctrpty_country_riad,
+                  t.rptgctrpty_country_gleif) AS rep_country,
+         COALESCE(t.othrctrpty_country_riad,
+                  t.othrctrpty_country_gleif,
+                  t.othrctrpty_ctrycd) AS oth_country,
+         COALESCE(t.rptgctrpty_ult_parent_id_riad,
+                  t.rptgctrpty_ult_parent_id_gleif) AS rep_parent_id,
+         COALESCE(t.othrctrpty_ult_parent_id_riad,
+                  t.othrctrpty_ult_parent_id_gleif) AS oth_parent_id,
+         COALESCE(t.rptgctrpty_ult_parent_country_riad,
+                  t.rptgctrpty_ult_parent_country_gleif) AS rep_parent_country,
+         COALESCE(t.othrctrpty_ult_parent_country_riad,
+                  t.othrctrpty_ult_parent_country_gleif) AS oth_parent_country,
+         MAX(t.othrpty_agtlndr_id) OVER (PARTITION BY t.ruti, t.business_date) AS agent_lender_any,
+         ROW_NUMBER() OVER (
+           PARTITION BY t.ruti, t.business_date
+           ORDER BY COALESCE(t.best_value_leg, 0) DESC,
+                    CASE WHEN t.direction = 'TAKE' THEN 1 ELSE 0 END DESC,
+                    t.rptgdttm DESC
+         ) AS rn
+  FROM crp_sftds_ecb_legacy.state_sl_079 t
+  WHERE t.business_date BETWEEN '2024-01-01' AND '2024-12-31'
+    AND t.local_index = 0
+    AND t.ruti IS NOT NULL AND t.ruti <> ''
+    AND t.lndata_assttp_scty_id IS NOT NULL
+    AND t.lnval_eur > 0
+    AND t.lnval_eur < 100000000000
+    AND t.valdt <= t.business_date
+    AND (t.term_fxd_mtrtydt IS NULL OR t.term_fxd_mtrtydt >= t.business_date)
+) d
+WHERE d.rn = 1;
+
+-- chunk 5: 2025-01-01 to 2025-12-31
+INSERT INTO xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
+SELECT
+  -- dates and identifiers
+  CAST(d.business_date AS DATE)      AS reference_period,
+  CAST(d.valdt AS DATE)              AS start_date,
+  COALESCE(CAST(d.termntndt AS DATE),
+           CAST(d.term_fxd_mtrtydt AS DATE)) AS effective_maturity_date,
+  CAST(d.evtdt AS DATE)              AS event_date,
+  CAST(SUBSTR(d.exctndttm, 1, 19) AS TIMESTAMP) AS execution_timestamp,
+  d.ruti                             AS tec_ruti,
+  d.uti,
+  d.tec_surrogate_key,
+  d.ctrctmod_lvl                     AS level,
+
+  CASE WHEN d.direction = 'TAKE' THEN 'lender'
+       WHEN d.direction = 'GIVE' THEN 'borrower' END AS reported_by,
+
+  -- lender = collateral taker
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_id
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_id END AS lender_id,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_name_gleif
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_name_gleif END AS lender_name,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_country
+       WHEN d.direction = 'GIVE' THEN d.oth_country END AS lender_country,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_sector_riad
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_sector_riad END AS lender_sector,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_parent_id
+       WHEN d.direction = 'GIVE' THEN d.oth_parent_id END AS lender_parent_id,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_parent_country
+       WHEN d.direction = 'GIVE' THEN d.oth_parent_country END AS lender_parent_country,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_ult_parent_sector_riad
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_ult_parent_sector_riad END AS lender_parent_sector,
+
+  -- borrower = collateral provider
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_id
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_id END AS borrower_id,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_name_gleif
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_name_gleif END AS borrower_name,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_country
+       WHEN d.direction = 'TAKE' THEN d.oth_country END AS borrower_country,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_sector_riad
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_sector_riad END AS borrower_sector,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_parent_id
+       WHEN d.direction = 'TAKE' THEN d.oth_parent_id END AS borrower_parent_id,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_parent_country
+       WHEN d.direction = 'TAKE' THEN d.oth_parent_country END AS borrower_parent_country,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_ult_parent_sector_riad
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_ult_parent_sector_riad END AS borrower_parent_sector,
+
+  -- intermediaries
+  d.othrpty_bnfcry_id                AS beneficiary_id,
+  d.agent_lender_any                 AS agent_lender_id,
+  d.othrpty_trptyagt_id              AS triparty_agent_id,
+  CASE WHEN d.clrsts_clrd_id IS NOT NULL THEN TRUE ELSE FALSE END AS cleared,
+
+  -- security on loan, one ISIN per trade
+  d.lndata_assttp_scty_id            AS isin,
+  d.lndata_assttp_scty_tp            AS loan_security_type,
+  d.lndata_assttp_scty_qlty          AS loan_security_quality,
+  d.lndata_assttp_scty_inst_esa_2010_csdb AS loan_security_instr_sector,
+  COALESCE(CAST(d.lndata_assttp_scty_mtrty AS DATE),
+           CAST(d.lndata_assttp_scty_mtrty_date_csdb AS DATE)) AS loan_security_maturity_date,
+  COALESCE(d.lndata_assttp_scty_issr_lei_csdb,
+           d.lndata_assttp_scty_issr_id)                  AS loan_security_issuer_lei,
+  COALESCE(d.lndata_assttp_scty_issr_cntry_csdb,
+           d.lndata_assttp_scty_issr_ctr)                 AS loan_security_issuer_country,
+  COALESCE(d.lndata_assttp_scty_issr_esa_2010_sctr_csdb,
+           d.lndata_assttp_scty_issr_sector_riad)         AS loan_security_issuer_sector,
+
+  -- how much of it
+  COALESCE(d.lndata_assttp_scty_qty,
+           d.lndata_assttp_scty_nmnl_amt)                 AS loan_quantity,
+  CASE WHEN d.lndata_assttp_scty_qty IS NOT NULL THEN 'Quantity'
+       WHEN d.lndata_assttp_scty_nmnl_amt IS NOT NULL THEN 'Monetary value' END AS loan_quantity_notation,
+  COALESCE(d.lndata_assttp_scty_unitpric_amt,
+           d.lndata_assttp_scty_unitpric_pctg,
+           d.lndata_assttp_scty_unitpric_yld)             AS loan_price,
+  d.lndata_assttp_scty_unitpric_amt_ccy                   AS loan_price_currency,
+  CASE WHEN d.lndata_assttp_scty_unitpric_amt IS NOT NULL THEN 'Monetary value'
+       WHEN d.lndata_assttp_scty_unitpric_pctg IS NOT NULL THEN 'Percentage'
+       WHEN d.lndata_assttp_scty_unitpric_yld IS NOT NULL THEN 'Yield' END AS loan_price_notation,
+  d.lnval                            AS loan_value,
+  d.lnval_ccy                        AS loan_value_currency,
+  d.lnval_eur                        AS loan_value_eur,
+  CAST(d.lndata_assttp_scty_mktval_amt_eur AS DECIMAL(23,5)) AS loan_market_value_eur,
+
+  -- price of the loan
+  d.lndgfee                          AS lending_fee,
+  CASE WHEN d.rbtrate_type = 'Fltg' THEN d.rbtrate_rate_derived_sdw
+       ELSE d.rbtrate_fxd_rate END   AS rebate_rate,
+  d.rbtrate_fltg_refrate_indx        AS rebate_index,
+  d.rbtrate_fltg_bsisptsprd          AS rebate_spread_bp,
+
+  -- term
+  CASE WHEN d.is_opn_term = '1' THEN 'OPEN'
+       WHEN d.is_opn_term = '0' THEN 'FIXED' END AS term_type,
+  COALESCE(d.term_fxd_termntnoptn, d.term_opn_termntnoptn) AS termination_optionality,
+  d.gnlcoll                          AS general_collateral_indicator,
+
+  -- collateral
+  d.netxpsrcollstnind                AS collateralisation_net_exposure,
+  d.bsktidr                          AS collateral_basket_id,
+  CASE WHEN d.uncollsd = 'NORE' THEN 'none'
+       WHEN d.collcmpnttp_scty = 1 AND d.collcmpnttp_csh = 1 THEN 'mixed'
+       WHEN d.collcmpnttp_scty = 1 THEN 'securities'
+       WHEN d.collcmpnttp_csh = 1 THEN 'cash'
+       WHEN d.netxpsrcollstnind = TRUE THEN 'net_exposure'
+       WHEN d.bsktidr IS NOT NULL THEN 'basket'
+       ELSE 'missing' END AS collateral_type
+FROM (
+  SELECT t.tec_surrogate_key, t.business_date, t.valdt, t.termntndt, t.term_fxd_mtrtydt,
+         t.term_fxd_termntnoptn, t.term_opn_termntnoptn, t.evtdt, t.exctndttm,
+         t.ruti, t.uti, t.ctrctmod_lvl, t.direction,
+         t.rptgctrpty_id, t.rptgctrpty_name_gleif, t.rptgctrpty_sector_riad, t.rptgctrpty_ult_parent_sector_riad,
+         t.othrctrpty_id, t.othrctrpty_name_gleif, t.othrctrpty_sector_riad, t.othrctrpty_ult_parent_sector_riad,
+         t.othrpty_bnfcry_id, t.othrpty_trptyagt_id, t.clrsts_clrd_id,
+         t.lndata_assttp_scty_id, t.lndata_assttp_scty_tp, t.lndata_assttp_scty_qlty,
+         t.lndata_assttp_scty_inst_esa_2010_csdb, t.lndata_assttp_scty_mtrty, t.lndata_assttp_scty_mtrty_date_csdb,
+         t.lndata_assttp_scty_issr_lei_csdb, t.lndata_assttp_scty_issr_id,
+         t.lndata_assttp_scty_issr_cntry_csdb, t.lndata_assttp_scty_issr_ctr,
+         t.lndata_assttp_scty_issr_esa_2010_sctr_csdb, t.lndata_assttp_scty_issr_sector_riad,
+         t.lndata_assttp_scty_qty, t.lndata_assttp_scty_nmnl_amt,
+         t.lndata_assttp_scty_unitpric_amt, t.lndata_assttp_scty_unitpric_pctg, t.lndata_assttp_scty_unitpric_yld,
+         t.lndata_assttp_scty_unitpric_amt_ccy,
+         t.lnval, t.lnval_ccy, t.lnval_eur, t.lndata_assttp_scty_mktval_amt_eur,
+         t.lndgfee, t.rbtrate_type, t.rbtrate_rate_derived_sdw, t.rbtrate_fxd_rate,
+         t.rbtrate_fltg_refrate_indx, t.rbtrate_fltg_bsisptsprd,
+         t.is_opn_term, t.gnlcoll, t.netxpsrcollstnind, t.bsktidr, t.uncollsd,
+         t.collcmpnttp_scty, t.collcmpnttp_csh,
+         COALESCE(t.rptgctrpty_country_riad,
+                  t.rptgctrpty_country_gleif) AS rep_country,
+         COALESCE(t.othrctrpty_country_riad,
+                  t.othrctrpty_country_gleif,
+                  t.othrctrpty_ctrycd) AS oth_country,
+         COALESCE(t.rptgctrpty_ult_parent_id_riad,
+                  t.rptgctrpty_ult_parent_id_gleif) AS rep_parent_id,
+         COALESCE(t.othrctrpty_ult_parent_id_riad,
+                  t.othrctrpty_ult_parent_id_gleif) AS oth_parent_id,
+         COALESCE(t.rptgctrpty_ult_parent_country_riad,
+                  t.rptgctrpty_ult_parent_country_gleif) AS rep_parent_country,
+         COALESCE(t.othrctrpty_ult_parent_country_riad,
+                  t.othrctrpty_ult_parent_country_gleif) AS oth_parent_country,
+         MAX(t.othrpty_agtlndr_id) OVER (PARTITION BY t.ruti, t.business_date) AS agent_lender_any,
+         ROW_NUMBER() OVER (
+           PARTITION BY t.ruti, t.business_date
+           ORDER BY COALESCE(t.best_value_leg, 0) DESC,
+                    CASE WHEN t.direction = 'TAKE' THEN 1 ELSE 0 END DESC,
+                    t.rptgdttm DESC
+         ) AS rn
+  FROM crp_sftds_ecb_legacy.state_sl_079 t
+  WHERE t.business_date BETWEEN '2025-01-01' AND '2025-12-31'
+    AND t.local_index = 0
+    AND t.ruti IS NOT NULL AND t.ruti <> ''
+    AND t.lndata_assttp_scty_id IS NOT NULL
+    AND t.lnval_eur > 0
+    AND t.lnval_eur < 100000000000
+    AND t.valdt <= t.business_date
+    AND (t.term_fxd_mtrtydt IS NULL OR t.term_fxd_mtrtydt >= t.business_date)
+) d
+WHERE d.rn = 1;
+
+-- chunk 6: 2026-01-01 to 2026-05-31
+INSERT INTO xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
+SELECT
+  -- dates and identifiers
+  CAST(d.business_date AS DATE)      AS reference_period,
+  CAST(d.valdt AS DATE)              AS start_date,
+  COALESCE(CAST(d.termntndt AS DATE),
+           CAST(d.term_fxd_mtrtydt AS DATE)) AS effective_maturity_date,
+  CAST(d.evtdt AS DATE)              AS event_date,
+  CAST(SUBSTR(d.exctndttm, 1, 19) AS TIMESTAMP) AS execution_timestamp,
+  d.ruti                             AS tec_ruti,
+  d.uti,
+  d.tec_surrogate_key,
+  d.ctrctmod_lvl                     AS level,
+
+  CASE WHEN d.direction = 'TAKE' THEN 'lender'
+       WHEN d.direction = 'GIVE' THEN 'borrower' END AS reported_by,
+
+  -- lender = collateral taker
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_id
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_id END AS lender_id,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_name_gleif
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_name_gleif END AS lender_name,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_country
+       WHEN d.direction = 'GIVE' THEN d.oth_country END AS lender_country,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_sector_riad
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_sector_riad END AS lender_sector,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_parent_id
+       WHEN d.direction = 'GIVE' THEN d.oth_parent_id END AS lender_parent_id,
+  CASE WHEN d.direction = 'TAKE' THEN d.rep_parent_country
+       WHEN d.direction = 'GIVE' THEN d.oth_parent_country END AS lender_parent_country,
+  CASE WHEN d.direction = 'TAKE' THEN d.rptgctrpty_ult_parent_sector_riad
+       WHEN d.direction = 'GIVE' THEN d.othrctrpty_ult_parent_sector_riad END AS lender_parent_sector,
+
+  -- borrower = collateral provider
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_id
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_id END AS borrower_id,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_name_gleif
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_name_gleif END AS borrower_name,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_country
+       WHEN d.direction = 'TAKE' THEN d.oth_country END AS borrower_country,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_sector_riad
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_sector_riad END AS borrower_sector,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_parent_id
+       WHEN d.direction = 'TAKE' THEN d.oth_parent_id END AS borrower_parent_id,
+  CASE WHEN d.direction = 'GIVE' THEN d.rep_parent_country
+       WHEN d.direction = 'TAKE' THEN d.oth_parent_country END AS borrower_parent_country,
+  CASE WHEN d.direction = 'GIVE' THEN d.rptgctrpty_ult_parent_sector_riad
+       WHEN d.direction = 'TAKE' THEN d.othrctrpty_ult_parent_sector_riad END AS borrower_parent_sector,
+
+  -- intermediaries
+  d.othrpty_bnfcry_id                AS beneficiary_id,
+  d.agent_lender_any                 AS agent_lender_id,
+  d.othrpty_trptyagt_id              AS triparty_agent_id,
+  CASE WHEN d.clrsts_clrd_id IS NOT NULL THEN TRUE ELSE FALSE END AS cleared,
+
+  -- security on loan, one ISIN per trade
+  d.lndata_assttp_scty_id            AS isin,
+  d.lndata_assttp_scty_tp            AS loan_security_type,
+  d.lndata_assttp_scty_qlty          AS loan_security_quality,
+  d.lndata_assttp_scty_inst_esa_2010_csdb AS loan_security_instr_sector,
+  COALESCE(CAST(d.lndata_assttp_scty_mtrty AS DATE),
+           CAST(d.lndata_assttp_scty_mtrty_date_csdb AS DATE)) AS loan_security_maturity_date,
+  COALESCE(d.lndata_assttp_scty_issr_lei_csdb,
+           d.lndata_assttp_scty_issr_id)                  AS loan_security_issuer_lei,
+  COALESCE(d.lndata_assttp_scty_issr_cntry_csdb,
+           d.lndata_assttp_scty_issr_ctr)                 AS loan_security_issuer_country,
+  COALESCE(d.lndata_assttp_scty_issr_esa_2010_sctr_csdb,
+           d.lndata_assttp_scty_issr_sector_riad)         AS loan_security_issuer_sector,
+
+  -- how much of it
+  COALESCE(d.lndata_assttp_scty_qty,
+           d.lndata_assttp_scty_nmnl_amt)                 AS loan_quantity,
+  CASE WHEN d.lndata_assttp_scty_qty IS NOT NULL THEN 'Quantity'
+       WHEN d.lndata_assttp_scty_nmnl_amt IS NOT NULL THEN 'Monetary value' END AS loan_quantity_notation,
+  COALESCE(d.lndata_assttp_scty_unitpric_amt,
+           d.lndata_assttp_scty_unitpric_pctg,
+           d.lndata_assttp_scty_unitpric_yld)             AS loan_price,
+  d.lndata_assttp_scty_unitpric_amt_ccy                   AS loan_price_currency,
+  CASE WHEN d.lndata_assttp_scty_unitpric_amt IS NOT NULL THEN 'Monetary value'
+       WHEN d.lndata_assttp_scty_unitpric_pctg IS NOT NULL THEN 'Percentage'
+       WHEN d.lndata_assttp_scty_unitpric_yld IS NOT NULL THEN 'Yield' END AS loan_price_notation,
+  d.lnval                            AS loan_value,
+  d.lnval_ccy                        AS loan_value_currency,
+  d.lnval_eur                        AS loan_value_eur,
+  CAST(d.lndata_assttp_scty_mktval_amt_eur AS DECIMAL(23,5)) AS loan_market_value_eur,
+
+  -- price of the loan
+  d.lndgfee                          AS lending_fee,
+  CASE WHEN d.rbtrate_type = 'Fltg' THEN d.rbtrate_rate_derived_sdw
+       ELSE d.rbtrate_fxd_rate END   AS rebate_rate,
+  d.rbtrate_fltg_refrate_indx        AS rebate_index,
+  d.rbtrate_fltg_bsisptsprd          AS rebate_spread_bp,
+
+  -- term
+  CASE WHEN d.is_opn_term = '1' THEN 'OPEN'
+       WHEN d.is_opn_term = '0' THEN 'FIXED' END AS term_type,
+  COALESCE(d.term_fxd_termntnoptn, d.term_opn_termntnoptn) AS termination_optionality,
+  d.gnlcoll                          AS general_collateral_indicator,
+
+  -- collateral
+  d.netxpsrcollstnind                AS collateralisation_net_exposure,
+  d.bsktidr                          AS collateral_basket_id,
+  CASE WHEN d.uncollsd = 'NORE' THEN 'none'
+       WHEN d.collcmpnttp_scty = 1 AND d.collcmpnttp_csh = 1 THEN 'mixed'
+       WHEN d.collcmpnttp_scty = 1 THEN 'securities'
+       WHEN d.collcmpnttp_csh = 1 THEN 'cash'
+       WHEN d.netxpsrcollstnind = TRUE THEN 'net_exposure'
+       WHEN d.bsktidr IS NOT NULL THEN 'basket'
+       ELSE 'missing' END AS collateral_type
+FROM (
+  SELECT t.tec_surrogate_key, t.business_date, t.valdt, t.termntndt, t.term_fxd_mtrtydt,
+         t.term_fxd_termntnoptn, t.term_opn_termntnoptn, t.evtdt, t.exctndttm,
+         t.ruti, t.uti, t.ctrctmod_lvl, t.direction,
+         t.rptgctrpty_id, t.rptgctrpty_name_gleif, t.rptgctrpty_sector_riad, t.rptgctrpty_ult_parent_sector_riad,
+         t.othrctrpty_id, t.othrctrpty_name_gleif, t.othrctrpty_sector_riad, t.othrctrpty_ult_parent_sector_riad,
+         t.othrpty_bnfcry_id, t.othrpty_trptyagt_id, t.clrsts_clrd_id,
+         t.lndata_assttp_scty_id, t.lndata_assttp_scty_tp, t.lndata_assttp_scty_qlty,
+         t.lndata_assttp_scty_inst_esa_2010_csdb, t.lndata_assttp_scty_mtrty, t.lndata_assttp_scty_mtrty_date_csdb,
+         t.lndata_assttp_scty_issr_lei_csdb, t.lndata_assttp_scty_issr_id,
+         t.lndata_assttp_scty_issr_cntry_csdb, t.lndata_assttp_scty_issr_ctr,
+         t.lndata_assttp_scty_issr_esa_2010_sctr_csdb, t.lndata_assttp_scty_issr_sector_riad,
+         t.lndata_assttp_scty_qty, t.lndata_assttp_scty_nmnl_amt,
+         t.lndata_assttp_scty_unitpric_amt, t.lndata_assttp_scty_unitpric_pctg, t.lndata_assttp_scty_unitpric_yld,
+         t.lndata_assttp_scty_unitpric_amt_ccy,
+         t.lnval, t.lnval_ccy, t.lnval_eur, t.lndata_assttp_scty_mktval_amt_eur,
+         t.lndgfee, t.rbtrate_type, t.rbtrate_rate_derived_sdw, t.rbtrate_fxd_rate,
+         t.rbtrate_fltg_refrate_indx, t.rbtrate_fltg_bsisptsprd,
+         t.is_opn_term, t.gnlcoll, t.netxpsrcollstnind, t.bsktidr, t.uncollsd,
+         t.collcmpnttp_scty, t.collcmpnttp_csh,
+         COALESCE(t.rptgctrpty_country_riad,
+                  t.rptgctrpty_country_gleif) AS rep_country,
+         COALESCE(t.othrctrpty_country_riad,
+                  t.othrctrpty_country_gleif,
+                  t.othrctrpty_ctrycd) AS oth_country,
+         COALESCE(t.rptgctrpty_ult_parent_id_riad,
+                  t.rptgctrpty_ult_parent_id_gleif) AS rep_parent_id,
+         COALESCE(t.othrctrpty_ult_parent_id_riad,
+                  t.othrctrpty_ult_parent_id_gleif) AS oth_parent_id,
+         COALESCE(t.rptgctrpty_ult_parent_country_riad,
+                  t.rptgctrpty_ult_parent_country_gleif) AS rep_parent_country,
+         COALESCE(t.othrctrpty_ult_parent_country_riad,
+                  t.othrctrpty_ult_parent_country_gleif) AS oth_parent_country,
+         MAX(t.othrpty_agtlndr_id) OVER (PARTITION BY t.ruti, t.business_date) AS agent_lender_any,
+         ROW_NUMBER() OVER (
+           PARTITION BY t.ruti, t.business_date
+           ORDER BY COALESCE(t.best_value_leg, 0) DESC,
+                    CASE WHEN t.direction = 'TAKE' THEN 1 ELSE 0 END DESC,
+                    t.rptgdttm DESC
+         ) AS rn
+  FROM crp_sftds_ecb_legacy.state_sl_079 t
+  WHERE t.business_date BETWEEN '2026-01-01' AND '2026-05-31'
     AND t.local_index = 0
     AND t.ruti IS NOT NULL AND t.ruti <> ''
     AND t.lndata_assttp_scty_id IS NOT NULL

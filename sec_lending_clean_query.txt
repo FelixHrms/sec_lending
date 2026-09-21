@@ -93,17 +93,13 @@ SELECT
   -- collateral
   d.collateralisation_net_exposure,
   CASE WHEN d.uncollateralised_flag = TRUE THEN 'none'
-       WHEN cs.coll_sec_mv_eur IS NOT NULL AND cc.coll_cash_eur IS NOT NULL THEN 'mixed'
-       WHEN cs.coll_sec_mv_eur IS NOT NULL THEN 'securities'
-       WHEN cc.coll_cash_eur IS NOT NULL THEN 'cash'
+       WHEN COALESCE(d.number_collateral_securities, 0) > 0
+        AND COALESCE(d.number_collateral_cash, 0) > 0 THEN 'mixed'
+       WHEN COALESCE(d.number_collateral_securities, 0) > 0 THEN 'securities'
+       WHEN COALESCE(d.number_collateral_cash, 0) > 0 THEN 'cash'
        WHEN d.collateralisation_net_exposure = TRUE THEN 'net_exposure'
        WHEN d.collateral_basket_id IS NOT NULL THEN 'basket'
-       ELSE 'missing' END AS collateral_type,
-  cc.coll_cash_eur,
-  cc.coll_cash_currency,
-  cc.coll_cash_haircut,
-  cs.coll_sec_mv_eur,
-  cs.coll_sec_haircut
+       ELSE 'missing' END AS collateral_type
 FROM (
   SELECT t.*,
          COALESCE(t.reporting_cpty_country_code_riad,
@@ -132,26 +128,4 @@ FROM (
     AND t.start_date <= t.reference_period
     AND (t.maturity_date IS NULL OR t.maturity_date >= t.reference_period)
 ) d
-LEFT JOIN (
-  SELECT t.tec_surrogate_key,
-         SUM(e.market_value_eur) AS coll_sec_mv_eur,
-         SUM(e.market_value_eur * e.haircut_margin)
-           / NULLIF(SUM(CASE WHEN e.haircut_margin IS NOT NULL
-                             THEN e.market_value_eur END), 0) AS coll_sec_haircut
-  FROM crp_sftds_ecb.trade_states_securitieslending t, t.collateral_security e
-  WHERE t.reference_period >= '2021-01-01'
-  GROUP BY t.tec_surrogate_key
-) cs ON cs.tec_surrogate_key = d.tec_surrogate_key
-LEFT JOIN (
-  SELECT t.tec_surrogate_key,
-         SUM(e.amount_eur) AS coll_cash_eur,
-         CASE WHEN COUNT(DISTINCT e.amount_currency) > 1 THEN 'MULTI'
-              ELSE MAX(e.amount_currency) END AS coll_cash_currency,
-         SUM(e.amount_eur * e.haircut_margin)
-           / NULLIF(SUM(CASE WHEN e.haircut_margin IS NOT NULL
-                             THEN e.amount_eur END), 0) AS coll_cash_haircut
-  FROM crp_sftds_ecb.trade_states_securitieslending t, t.collateral_cash e
-  WHERE t.reference_period >= '2021-01-01'
-  GROUP BY t.tec_surrogate_key
-) cc ON cc.tec_surrogate_key = d.tec_surrogate_key
 WHERE d.rn = 1;

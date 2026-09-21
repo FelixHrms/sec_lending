@@ -1,0 +1,157 @@
+CREATE EXTERNAL TABLE xlab_ecb_prj_sftds_cb_common.hermesf_sf
+STORED AS PARQUET TBLPROPERTIES ('external.table.purge'='true')
+AS
+SELECT
+  -- dates and identifiers
+  CAST(d.reference_period AS DATE)   AS reference_period,
+  CAST(d.start_date AS DATE)         AS start_date,
+  COALESCE(CAST(d.termination_date AS DATE),
+           CAST(d.maturity_date AS DATE)) AS effective_maturity_date,
+  CAST(d.event_date AS DATE)         AS event_date,
+  d.execution_timestamp,
+  d.tec_ruti,
+  d.uti,
+
+  CASE WHEN d.counterparty_side = 'TAKE' THEN 'lender'
+       WHEN d.counterparty_side = 'GIVE' THEN 'borrower' END AS reported_by,
+
+  -- lender = collateral taker
+  CASE WHEN d.counterparty_side = 'TAKE' THEN d.reporting_cpty_id
+       WHEN d.counterparty_side = 'GIVE' THEN d.other_cpty_id END AS lender_id,
+  CASE WHEN d.counterparty_side = 'TAKE' THEN d.reporting_cpty_name_gleif
+       WHEN d.counterparty_side = 'GIVE' THEN d.other_cpty_name_gleif END AS lender_name,
+  CASE WHEN d.counterparty_side = 'TAKE' THEN d.rep_country
+       WHEN d.counterparty_side = 'GIVE' THEN d.oth_country END AS lender_country,
+  CASE WHEN d.counterparty_side = 'TAKE' THEN d.reporting_cpty_esa_sector_riad
+       WHEN d.counterparty_side = 'GIVE' THEN d.other_cpty_esa_sector_riad END AS lender_sector,
+  CASE WHEN d.counterparty_side = 'TAKE' THEN d.rep_parent_id
+       WHEN d.counterparty_side = 'GIVE' THEN d.oth_parent_id END AS lender_parent_id,
+  CASE WHEN d.counterparty_side = 'TAKE' THEN d.rep_parent_country
+       WHEN d.counterparty_side = 'GIVE' THEN d.oth_parent_country END AS lender_parent_country,
+  CASE WHEN d.counterparty_side = 'TAKE' THEN d.reporting_cpty_ultimate_parent_esa_sector_riad
+       WHEN d.counterparty_side = 'GIVE' THEN d.other_cpty_ultimate_parent_esa_sector_riad END AS lender_parent_sector,
+
+  -- borrower = collateral provider
+  CASE WHEN d.counterparty_side = 'GIVE' THEN d.reporting_cpty_id
+       WHEN d.counterparty_side = 'TAKE' THEN d.other_cpty_id END AS borrower_id,
+  CASE WHEN d.counterparty_side = 'GIVE' THEN d.reporting_cpty_name_gleif
+       WHEN d.counterparty_side = 'TAKE' THEN d.other_cpty_name_gleif END AS borrower_name,
+  CASE WHEN d.counterparty_side = 'GIVE' THEN d.rep_country
+       WHEN d.counterparty_side = 'TAKE' THEN d.oth_country END AS borrower_country,
+  CASE WHEN d.counterparty_side = 'GIVE' THEN d.reporting_cpty_esa_sector_riad
+       WHEN d.counterparty_side = 'TAKE' THEN d.other_cpty_esa_sector_riad END AS borrower_sector,
+  CASE WHEN d.counterparty_side = 'GIVE' THEN d.rep_parent_id
+       WHEN d.counterparty_side = 'TAKE' THEN d.oth_parent_id END AS borrower_parent_id,
+  CASE WHEN d.counterparty_side = 'GIVE' THEN d.rep_parent_country
+       WHEN d.counterparty_side = 'TAKE' THEN d.oth_parent_country END AS borrower_parent_country,
+  CASE WHEN d.counterparty_side = 'GIVE' THEN d.reporting_cpty_ultimate_parent_esa_sector_riad
+       WHEN d.counterparty_side = 'TAKE' THEN d.other_cpty_ultimate_parent_esa_sector_riad END AS borrower_parent_sector,
+
+  -- intermediaries
+  d.beneficiary_id,
+  d.agent_lender_id,
+  d.triparty_agent_id,
+  d.cleared,
+
+  -- security on loan, one ISIN per trade
+  d.loan_security_id                                            AS isin,
+  d.loan_security_type,
+  d.loan_security_quality,
+  d.loan_security_esa_instr_sector_csdb                         AS loan_security_instr_sector,
+  COALESCE(CAST(d.loan_security_maturity_date AS DATE),
+           CAST(d.loan_security_maturity_date_csdb AS DATE))    AS loan_security_maturity_date,
+  COALESCE(d.loan_security_issuer_lei_csdb,
+           d.loan_security_issuer_lei)                          AS loan_security_issuer_lei,
+  COALESCE(d.loan_security_issuer_country_code_csdb,
+           d.loan_security_issuer_country)                      AS loan_security_issuer_country,
+  COALESCE(d.loan_security_issuer_esa_sector_csdb,
+           d.loan_security_issuer_esa_sector_riad)              AS loan_security_issuer_sector,
+
+  -- how much of it
+  d.loan_security_quantity_or_nominal_amount                    AS loan_quantity,
+  d.loan_security_quantity_or_nominal_amount_notation_type      AS loan_quantity_notation,
+  d.loan_security_price                                         AS loan_price,
+  d.loan_security_price_currency                                AS loan_price_currency,
+  d.loan_security_price_notation_type                           AS loan_price_notation,
+  d.loan_value,
+  d.loan_value_currency,
+  d.loan_value_eur,
+  d.loan_security_market_value_eur                              AS loan_market_value_eur,
+
+  -- price of the loan
+  d.lending_fee,
+  CASE WHEN d.rebate_rate_type = 'Floating' THEN d.rebate_rate_derived_sdw
+       ELSE d.fxd_rebate_rate END                               AS rebate_rate,
+  d.flt_rebate_rate                                             AS rebate_index,
+  d.flt_rebate_rate_spread_basispoints                          AS rebate_spread_bp,
+
+  -- term
+  d.term_type,
+  d.termination_optionality,
+  d.general_collateral_indicator,
+
+  -- collateral
+  d.collateralisation_net_exposure,
+  CASE WHEN d.uncollateralised_flag = TRUE THEN 'none'
+       WHEN cs.coll_sec_mv_eur IS NOT NULL AND cc.coll_cash_eur IS NOT NULL THEN 'mixed'
+       WHEN cs.coll_sec_mv_eur IS NOT NULL THEN 'securities'
+       WHEN cc.coll_cash_eur IS NOT NULL THEN 'cash'
+       WHEN d.collateralisation_net_exposure = TRUE THEN 'net_exposure'
+       WHEN d.collateral_basket_id IS NOT NULL THEN 'basket'
+       ELSE 'missing' END AS collateral_type,
+  cc.coll_cash_eur,
+  cc.coll_cash_currency,
+  cc.coll_cash_haircut,
+  cs.coll_sec_mv_eur,
+  cs.coll_sec_haircut
+FROM (
+  SELECT t.*,
+         COALESCE(t.reporting_cpty_country_code_riad,
+                  t.reporting_cpty_country_code_gleif) AS rep_country,
+         COALESCE(t.other_cpty_country_code_riad,
+                  t.other_cpty_country_code_gleif,
+                  t.other_cpty_country) AS oth_country,
+         COALESCE(t.reporting_cpty_ultimate_parent_id_riad,
+                  t.reporting_cpty_ultimate_parent_id_gleif) AS rep_parent_id,
+         COALESCE(t.other_cpty_ultimate_parent_id_riad,
+                  t.other_cpty_ultimate_parent_id_gleif) AS oth_parent_id,
+         COALESCE(t.reporting_cpty_ultimate_parent_country_riad,
+                  t.reporting_cpty_ultimate_parent_country_gleif) AS rep_parent_country,
+         COALESCE(t.other_cpty_ultimate_parent_country_riad,
+                  t.other_cpty_ultimate_parent_country_gleif) AS oth_parent_country,
+         ROW_NUMBER() OVER (
+           PARTITION BY t.tec_ruti, t.reference_period
+           ORDER BY COALESCE(t.tec_best_value_leg, 0) DESC, t.reporting_timestamp DESC
+         ) AS rn
+  FROM crp_sftds_ecb.trade_states_securitieslending t
+  WHERE t.reference_period >= '2021-01-01'
+    AND t.tec_ruti IS NOT NULL AND t.tec_ruti <> ''
+    AND t.loan_security_id IS NOT NULL
+    AND t.loan_value_eur > 0
+    AND t.loan_value_eur < 100000000000
+    AND t.start_date <= t.reference_period
+    AND (t.maturity_date IS NULL OR t.maturity_date >= t.reference_period)
+) d
+LEFT JOIN (
+  SELECT t.tec_surrogate_key,
+         SUM(e.market_value_eur) AS coll_sec_mv_eur,
+         SUM(e.market_value_eur * e.haircut_margin)
+           / NULLIF(SUM(CASE WHEN e.haircut_margin IS NOT NULL
+                             THEN e.market_value_eur END), 0) AS coll_sec_haircut
+  FROM crp_sftds_ecb.trade_states_securitieslending t, t.collateral_security e
+  WHERE t.reference_period >= '2021-01-01'
+  GROUP BY t.tec_surrogate_key
+) cs ON cs.tec_surrogate_key = d.tec_surrogate_key
+LEFT JOIN (
+  SELECT t.tec_surrogate_key,
+         SUM(e.amount_eur) AS coll_cash_eur,
+         CASE WHEN COUNT(DISTINCT e.amount_currency) > 1 THEN 'MULTI'
+              ELSE MAX(e.amount_currency) END AS coll_cash_currency,
+         SUM(e.amount_eur * e.haircut_margin)
+           / NULLIF(SUM(CASE WHEN e.haircut_margin IS NOT NULL
+                             THEN e.amount_eur END), 0) AS coll_cash_haircut
+  FROM crp_sftds_ecb.trade_states_securitieslending t, t.collateral_cash e
+  WHERE t.reference_period >= '2021-01-01'
+  GROUP BY t.tec_surrogate_key
+) cc ON cc.tec_surrogate_key = d.tec_surrogate_key
+WHERE d.rn = 1;

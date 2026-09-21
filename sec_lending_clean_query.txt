@@ -51,7 +51,7 @@ SELECT
 
   -- intermediaries
   d.beneficiary_id,
-  d.agent_lender_id,
+  d.agent_lender_any                 AS agent_lender_id,
   d.triparty_agent_id,
   d.cleared,
 
@@ -94,6 +94,7 @@ SELECT
 
   -- collateral
   d.collateralisation_net_exposure,
+  d.collateral_basket_id,
   CASE WHEN d.uncollateralised_flag = TRUE THEN 'none'
        WHEN COALESCE(d.number_collateral_securities, 0) > 0
         AND COALESCE(d.number_collateral_cash, 0) > 0 THEN 'mixed'
@@ -117,6 +118,7 @@ FROM (
                   t.reporting_cpty_ultimate_parent_country_gleif) AS rep_parent_country,
          COALESCE(t.other_cpty_ultimate_parent_country_riad,
                   t.other_cpty_ultimate_parent_country_gleif) AS oth_parent_country,
+         MAX(t.agent_lender_id) OVER (PARTITION BY t.tec_ruti, t.reference_period) AS agent_lender_any,
          ROW_NUMBER() OVER (
            PARTITION BY t.tec_ruti, t.reference_period
            ORDER BY COALESCE(t.tec_best_value_leg, 0) DESC, t.reporting_timestamp DESC

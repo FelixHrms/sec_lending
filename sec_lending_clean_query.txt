@@ -1,4 +1,4 @@
-CREATE EXTERNAL TABLE xlab_ecb_prj_sftds_cb_common.hermesf_sl
+CREATE EXTERNAL TABLE xlab_ecb_prj_sftds_cb_common.hermesf_sl_new
 STORED AS PARQUET TBLPROPERTIES ('external.table.purge'='true')
 AS
 SELECT

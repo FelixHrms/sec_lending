@@ -160,9 +160,3 @@ FROM (
     AND (t.term_fxd_mtrtydt IS NULL OR t.term_fxd_mtrtydt >= t.business_date)
 ) d
 WHERE d.rn = 1;
-
--- full series, legacy up to 2026-05-31 and the new table from 2026-06-01
-CREATE VIEW xlab_ecb_prj_sftds_cb_common.hermesf_sl_full AS
-SELECT * FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
-UNION ALL
-SELECT * FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl;

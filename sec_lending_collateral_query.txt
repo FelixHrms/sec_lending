@@ -22,7 +22,7 @@ SELECT
   COALESCE(e.isin_issuer_esa_sector_csdb, e.issuer_esa_sector_riad)           AS collateral_issuer_sector,
   e.reuse_availability                           AS collateral_reusable
 FROM crp_sftds_ecb.trade_states_securitieslending t, t.collateral_security e
-WHERE t.tec_surrogate_key IN (SELECT tec_surrogate_key FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl)
+WHERE t.tec_surrogate_key IN (SELECT tec_surrogate_key FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl_new)
 
 UNION ALL
 
@@ -47,4 +47,4 @@ SELECT
   CAST(NULL AS STRING),
   CAST(NULL AS BOOLEAN)
 FROM crp_sftds_ecb.trade_states_securitieslending t, t.collateral_cash e
-WHERE t.tec_surrogate_key IN (SELECT tec_surrogate_key FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl);
+WHERE t.tec_surrogate_key IN (SELECT tec_surrogate_key FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl_new);

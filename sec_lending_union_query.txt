@@ -1,0 +1,7 @@
+-- full series: legacy table up to 2026-05-31, new table from 2026-06-01
+CREATE EXTERNAL TABLE xlab_ecb_prj_sftds_cb_common.hermesf_sl
+STORED AS PARQUET TBLPROPERTIES ('external.table.purge'='true')
+AS
+SELECT * FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
+UNION ALL
+SELECT * FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl_new;

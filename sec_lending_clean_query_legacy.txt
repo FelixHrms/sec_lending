@@ -1,4 +1,4 @@
--- Run through sec_lending_legacy_load.py, which loads this statement in monthly chunks.
+-- Run through legacy_load.ipynb, which loads this statement in monthly chunks.
 CREATE EXTERNAL TABLE xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
 STORED AS PARQUET TBLPROPERTIES ('external.table.purge'='true')
 AS

@@ -1,7 +1,25 @@
 -- full series: legacy table up to 2026-05-31, new table from 2026-06-01
+-- adds loan_value_eur_clean (rule 16) and keeps live loans (rule 17) below the cap (rule 18),
+-- see cleaning_rules.md
 CREATE EXTERNAL TABLE xlab_ecb_prj_sftds_cb_common.hermesf_sl
 STORED AS PARQUET TBLPROPERTIES ('external.table.purge'='true')
 AS
-SELECT * FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
-UNION ALL
-SELECT * FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl_new;
+SELECT *
+FROM (
+  SELECT u.*,
+         CASE WHEN u.loan_security_type IN ('GOVS', 'SUNS', 'FIDE', 'NFID', 'LOCA', 'ABSC', 'SEPR')
+               AND u.loan_price IS NOT NULL AND u.loan_value IS NOT NULL AND u.loan_value <> 0
+              THEN u.loan_quantity
+                   * CASE WHEN u.loan_price >= 1000 THEN u.loan_price / 10000
+                          WHEN u.loan_price >= 5    THEN u.loan_price / 100
+                          ELSE u.loan_price END
+                   * (u.loan_value_eur / u.loan_value)
+              ELSE u.loan_value_eur END AS loan_value_eur_clean
+  FROM (
+    SELECT * FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl_legacy
+    UNION ALL
+    SELECT * FROM xlab_ecb_prj_sftds_cb_common.hermesf_sl_new
+  ) u
+) v
+WHERE DATEDIFF(CAST(v.reference_period AS TIMESTAMP), CAST(v.event_date AS TIMESTAMP)) <= 90
+  AND v.loan_value_eur_clean <= 10000000000;

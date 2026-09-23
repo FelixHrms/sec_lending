@@ -3,7 +3,7 @@
 Rules 1 to 15 are implemented in `sec_lending_clean_query.txt` (new table, `hermesf_sl_new`),
 `sec_lending_clean_query_legacy.txt` (legacy table, `hermesf_sl_legacy`, loaded by `legacy_load.ipynb`)
 and `sec_lending_collateral_query.txt`. `sec_lending_union_query.txt` stacks the two loan tables into `hermesf_sl`.
-Rules 16 to 18 were tested in `legacy_structure.ipynb` and in the volume plots and are not in any query yet.
+Rules 16 to 18 are implemented in `sec_lending_union_query.txt`, which also adds the one derived column `loan_value_eur_clean`.
 
 ## Which rows enter
 
@@ -39,7 +39,7 @@ Rules 16 to 18 were tested in `legacy_structure.ipynb` and in the volume plots a
 15. Collateral pieces go to a separate table, kept legs only, quantities and cash amounts in absolute
     value, no market values.
 
-## Tested, not yet in any query
+## Applied in the union query
 
 16. Bond value correction. For the debt types GOVS, SUNS, FIDE, NFID, LOCA, ABSC and SEPR with a
     price and a value present, the EUR value is rebuilt from the reported inputs instead of trusting
@@ -62,6 +62,6 @@ Rules 16 to 18 were tested in `legacy_structure.ipynb` and in the volume plots a
 
 ## Remarks
 
-Rule 4 becomes redundant once rules 16 and 18 are in. Rule 7 is the one place where the two cleaning
+Rule 4 is redundant now that rules 16 and 18 are in, it stays in the two cleaning queries as a harmless guard. Rule 7 is the one place where the two cleaning
 queries differ, harmless today because the new table has no unflagged pairs, but worth aligning when
 the queries are touched next.
